@@ -1,0 +1,38 @@
+#
+# Stable ROBODoc control file 
+# 
+# L. M. Thompson 10/05/22
+#
+options:
+    --src . 
+    --doc ./doc/stable
+    --singledoc 
+#    --html
+#    --latex
+#    --rtf
+    --ascii
+    --documenttitle "SCF Stability Calculator"
+    --tabsize 8
+items:
+    SYNOPSIS
+    NAME
+    COPYRIGHT
+    USAGE
+    AUTHOR
+    OPTIONS
+    NOTES
+headertypes:
+    x  "Main Program"  main 
+header markers:
+    !****
+end markers:
+    !****
+remark begin markers:
+    !*
+remark end markers:
+    !*
+remark markers:
+    !*
+source line comments:
+    !
+

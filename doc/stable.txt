@@ -1,0 +1,55 @@
+Main/Stability
+
+NAME
+      SCF Stability Calculator
+SYNOPSIS
+      Computes the stability of an SCF wavefunction.
+USAGE
+      stable [-f <matrix_file>] [--print-level <print_level>] [--help]
+OPTIONS
+   1. Input/output
+
+      -f matrix_file                   Input matrix file with set of molecular orbitals and two-
+                                       electron integrals. 
+
+      --print-level print_level        Verbosity of output. Default print level is 1. Options
+                                       0-4.
+
+      --neigs neigs                    Number of orbital rotation Hessian eigenvalues to print.
+                                       Default is 5.
+
+      --vecThresh vecThresh            Lowest limit for orbital rotation Hessian eigenvalue 
+                                       component to be printed. Default is 0.1.
+
+      --wf-test test_string            Specifies the type of instability to be tested. Note that
+                                       only symmetries of the same type or lower than the input
+                                       wavefunction symmetry are valid. The default is to test 
+                                       for an internal instability. Options are: 
+                                       1) R
+                                          Test for real instabilities.
+                                       2) C 
+                                          Test for complex instabilities.
+
+      --help                           Output help documentation to terminal.
+
+NOTES
+      Compilation of this program requires the MQC library (https://github.com/MQCPack/mqcPack)
+      and the gauopen utility (http://gaussian.com/g16/gauopen.zip) and compilation with the
+      f08 standard.
+
+      Compilation tested using: gfortran 9.2.0
+
+      Note that subroutine Wr_LCBuf needs modifying in gauopen/qcmatrix.F as follows:
+        line 58:       LenBX = (LenBuf/(2*abs(NR)))*abs(NR)
+        line 60:       Call Wr_CBuf(IU,NTot*abs(NR),LenBX,X)
+
+      Documentation generated with robodoc. To update documentation edit robodoc.rc to
+      determine documentation output type and then run robodoc at the command line in the
+      main directory.
+
+    AUTHORS
+      Lee M. Thompson, University of Louisville, lee.thompson.1@lousiville.edu
+COPYRIGHT
+      (c) 2022 by Lee M. Thompson distributed under terms of the MIT license.
+
+---------------------------------------------------------------------------
