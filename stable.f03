@@ -34,7 +34,9 @@
       type(mqc_scf_eigenvalues)::mo_energies
 !
 !*    USAGE
-!*      stable [-f <matrix_file>] [--print-level <print_level>] [--help]
+!*      stable [-f <matrix_file>] [--print-level <print_level>] [--neigs <neigs>] [--vecThresh <vecThresh>]
+!*        [--follow <vector>] [--step <step>] [--wf-test <wf_string>] [--otype <extension>] [-o <output_file>] 
+!*        [--help]
 !*
 !*    OPTIONS
 !* 

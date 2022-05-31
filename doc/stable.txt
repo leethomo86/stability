@@ -5,7 +5,9 @@ NAME
 SYNOPSIS
       Computes the stability of an SCF wavefunction.
 USAGE
-      stable [-f <matrix_file>] [--print-level <print_level>] [--help]
+      stable [-f <matrix_file>] [--print-level <print_level>] [--neigs <neigs>] [--vecThresh <vecThresh>]
+        [--follow <vector>] [--step <step>] [--wf-test <wf_string>] [--otype <extension>] [-o <output_file>] 
+        [--help]
 OPTIONS
    1. Input/output
 
