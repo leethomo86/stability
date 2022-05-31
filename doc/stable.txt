@@ -21,6 +21,15 @@ OPTIONS
       --vecThresh vecThresh            Lowest limit for orbital rotation Hessian eigenvalue 
                                        component to be printed. Default is 0.1.
 
+      --follow vector                  Specifies the vector to follow when returning a matrix
+                                       file with a perturbed set of molecular orbitals. Default 
+                                       is not to return a matrix file which is 0.
+
+      --step step-size                 Size of step when following a vector to return perturbed 
+                                       set of molecular orbitals. As only first order Zassenhaus 
+                                       formula is implemented, only small step sizes should be used.
+                                       Default is 0.05. 
+
       --wf-test test_string            Specifies the type of instability to be tested. Note that
                                        only symmetries of the same type or lower than the input
                                        wavefunction symmetry are valid. The default is to test 
@@ -29,6 +38,12 @@ OPTIONS
                                           Test for real instabilities.
                                        2) C 
                                           Test for complex instabilities.
+
+      --otype extension                Format of output file. Options are:
+                                       1) chk (default)
+                                       2) mat
+
+      -o output_file                   Output file name. Default is input file name.
 
       --help                           Output help documentation to terminal.
 
