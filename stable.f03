@@ -119,9 +119,12 @@
 !*                                          Test for real instabilities.
 !*                                       2) C 
 !*                                          Test for complex instabilities.
+!*                                       3) A 
+!*                                          Test for all instabilities.
 !*
           call mqc_get_command_argument(i+1,command)
           wf_string = trim(command)
+          if (.not.any(['R','C','A'].eq.wf_string)) call mqc_error_a('Unrecognized symmetry input',iOut,'wf_string',wf_string)
           j = i+2
         elseIf(command.eq.'--otype') then
 !
@@ -225,7 +228,7 @@
       if(wf_complex.and.wf_string(1:1).eq.'R') &
         call mqc_error_A(' Requesting real instability test but wavefunction is already complex', &
         6,'wf_string',wf_string)
-      wf_complex=.true.
+      if(wf_string.eq.'A') wf_complex=.true.
 !
 !     Compute MO Fock matrix (orbital rotation gradient)
 !
@@ -434,6 +437,7 @@
         select case (otype)
         case ('chk')
           call EXECUTE_COMMAND_LINE("unfchk -matrix "//trim(outputFile)//".mat "//trim(outputFile)//".chk")
+          call EXECUTE_COMMAND_LINE("rm "//trim(outputFile)//".mat")
         case ('mat')
 !         nothing to do here
         case default
@@ -484,27 +488,27 @@
       call fileInfo%writeArray('COORDINATES OF EACH SHELL',shCoor)
       If(.not.doUHF.and..not.doGHF.and..not.doComplex) then
         write(iout,'(A)') ' Writing a real restricted solution'
-        call fileinfo%writeESTObj('mo coefficients',est_integral=mo_coefficients,override='space')
+        call fileinfo%writeESTObj('mo coefficients',est_integral=mo_coefficients,override='space',imagORide='real')
         call fileinfo%writeESTObj('mo energies',est_eigenvalues=mo_energies,override='space')
       elseIf(doUHF.and..not.doGHF.and..not.doComplex) then
         write(iout,'(A)') ' Writing a real unrestricted solution'
-        call fileinfo%writeESTObj('mo coefficients',est_integral=mo_coefficients,override='spin')
+        call fileinfo%writeESTObj('mo coefficients',est_integral=mo_coefficients,override='spin',imagORide='real')
         call fileinfo%writeESTObj('mo energies',est_eigenvalues=mo_energies,override='spin')
       elseIf(doGHF.and..not.doUHF.and..not.doComplex) then
         write(iout,'(A)') ' Writing a real general solution'
-        call fileinfo%writeESTObj('mo coefficients',est_integral=mo_coefficients,override='general')
+        call fileinfo%writeESTObj('mo coefficients',est_integral=mo_coefficients,override='general',imagORide='real')
         call fileinfo%writeESTObj('mo energies',est_eigenvalues=mo_energies,override='general')
       elseIf(doComplex.and..not.doUHF.and..not.doGHF) then
         write(iout,'(A)') ' Writing a complex restricted solution'
-        call fileinfo%writeESTObj('mo coefficients',est_integral=mo_coefficients,override='space')
+        call fileinfo%writeESTObj('mo coefficients',est_integral=mo_coefficients,override='space',imagORide='complex')
         call fileinfo%writeESTObj('mo energies',est_eigenvalues=mo_energies,override='space')
       elseIf(doComplex.and.doUHF.and..not.doGHF) then
         write(iout,'(A)') ' Writing a complex unrestricted solution'
-        call fileinfo%writeESTObj('mo coefficients',est_integral=mo_coefficients,override='spin')
+        call fileinfo%writeESTObj('mo coefficients',est_integral=mo_coefficients,override='spin',imagORide='complex')
         call fileinfo%writeESTObj('mo energies',est_eigenvalues=mo_energies,override='spin')
       elseIf(doComplex.and.doGHF.and..not.doUHF) then
         write(iout,'(A)') ' Writing a complex general solution'
-        call fileinfo%writeESTObj('mo coefficients',est_integral=mo_coefficients,override='general')
+        call fileinfo%writeESTObj('mo coefficients',est_integral=mo_coefficients,override='general',imagORide='complex')
         call fileinfo%writeESTObj('mo energies',est_eigenvalues=mo_energies,override='general')
       else
         call mqc_error(' Unknown symmetry type in guessGen output')
