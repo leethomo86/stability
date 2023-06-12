@@ -40,6 +40,8 @@ OPTIONS
                                           Test for real instabilities.
                                        2) C 
                                           Test for complex instabilities.
+                                       3) A 
+                                          Test for all instabilities.
 
       --otype extension                Format of output file. Options are:
                                        1) chk (default)

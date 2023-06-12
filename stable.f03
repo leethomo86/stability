@@ -19,19 +19,21 @@
       character(len=:),allocatable::command,fileName,help_path,wf_string,outputfile
       character(len=1)::wf_type
       character(len=256)::vecString,otype='chk',file_tmp
-      integer(kind=int64)::iOut=6,iPrint=1,iUnit,flag,i,j,nAlpha,nBeta,nBasis,ovDim,oRHessDim,&
-        occ1,occ2,virt1,virt2,ind,ind2,neigs2print=5,vecfollow=0,elem1,elem2
+      integer(kind=int64)::iOut=6,iPrint=1,iUnit,flag,i,j,k,l,nAlpha,nBeta,nBasis,ovDim,oRHessDim,&
+        occ1,occ2,virt1,virt2,ind,ind2,neigs2print=5,vecfollow=0,elem1,elem2,maxIters=1000,degen_start, &
+        degen_end,ivec,jvec
       real(kind=real64)::vecThresh=0.1,step=0.05
       real(kind=real64),parameter::thresh=1.0e-10
       logical::found,wf_complex,doUHF,doGHF,doComplex,file_exists
       type(mqc_molecule_data)::moleculeInfo
       type(mqc_twoERIs),dimension(:),allocatable::eris
-      type(mqc_scalar)::Vnn,val,theta,x,y
+      type(mqc_scalar)::Vnn,val,phi,theta
       type(mqc_scf_integral)::core_hamiltonian,mo_coefficients,fock,density,GMat
       type(mqc_matrix)::OrbRotHess,oRVecs,rotation_matrix,sh2AtMp,shlTyp,nPrmSh,prmExp,conCoef,&
         conCoTwo,shCoor
       type(mqc_vector)::oREigs,vec2process
       type(mqc_scf_eigenvalues)::mo_energies
+      logical::degen_flag
 !
 !*    USAGE
 !*      stable [-f <matrix_file>] [--print-level <print_level>] [--neigs <neigs>] [--vecThresh <vecThresh>]
@@ -220,7 +222,7 @@
           wf_string = 'R'
         endIf
       else
-        if((wf_string(1:1).ne.'C'.and.wf_string(1:1).ne.'R').or.&
+        if((wf_string(1:1).ne.'C'.and.wf_string(1:1).ne.'R'.and.wf_string(1:1).ne.'A').or.&
           len(wf_string).ne.1) &
           call mqc_error_A(' Instability test input format incorrect',6,'wf_string',wf_string)
       endIf
@@ -292,38 +294,73 @@
 !     Ensure eigenvectors have vanishing eta norm 
 !
       if(wf_complex) then
+        degen_flag = .false.
         do i = 1, size(oREigs)-1
-          if(abs(oREigs%at(i)-oREigs%at(i+1)).lt.thresh) then
-            do j = 1, ovDim
-              ind = mqc_vector_Scalar_at(mqc_vector_argsort(oRVecs%vat([1,ovDim],[i])),j)
-              if(oRVecs%at(ind,i)*oRVecs%at(ind,i+1)*oRVecs%at(ind+ovDim,i)*oRVecs%at(ind+ovDim,i+1).gt.thresh) exit
+
+          if(abs(oREigs%at(i)-oREigs%at(i+1)).lt.thresh.and..not.degen_flag) then
+!           We have found the start of a degenerate block. Make record as 
+!           necessary.
+            degen_start = i
+            degen_flag = .true.
+            cycle
+          elseIf(abs(oREigs%at(i)-oREigs%at(i+1)).lt.thresh.and.degen_flag) then
+!           We are in the middle of a degenerate block, nothing to do for now.
+            cycle
+          elseIf(abs(oREigs%at(i)-oREigs%at(i+1)).ge.thresh.and.degen_flag) then
+!           We have found the end of a degenerate block, time to cycle through 
+!           until vectors are in the correct form.
+            degen_end = i
+            degen_flag = .false.
+            do l = 0, maxIters
+              do k = 0, degen_end-degen_start
+                ivec = degen_start+mod(k,degen_end-degen_start+1)
+                jvec = degen_start+mod(k+1,degen_end-degen_start+1)
+
+                do j = ovDim,1,-1
+!                 Pick the element with the largest difference between ind and ind+ovDim and make sure there are no zeros. 
+                  ind = mqc_vector_Scalar_at(&
+                    mqc_vector_argsort(abs(oRVecs%vat([1,ovDim],[ivec])-conjg(oRVecs%vat([ovDim+1,2*ovDim],[ivec])))),j)
+                  if(jvec.ne.degen_start) then
+                    if(abs(oRVecs%at(ind,ivec)*oRVecs%at(ind+ovDim,ivec)*oRVecs%at(ind,jvec)*oRVecs%at(ind+ovDim,jvec)).lt.&
+                      thresh) then 
+                      if(j.ne.1) then
+                        cycle 
+                      else
+!                       If we don't have any choice with a non-zero element, we can only do the phi rotation, so pick the
+!                       largest element.
+                        ind = mqc_vector_Scalar_at(&
+                          mqc_vector_argsort(abs(oRVecs%vat([1,ovDim],[ivec])-conjg(oRVecs%vat([ovDim+1,2*ovDim],[ivec])))),ovDim)
+                      endIf
+                    endIf
+                  else
+!                   If we are at the last element in the series, just do phi
+                    if(abs(oRVecs%at(ind,ivec)*oRVecs%at(ind+ovDim,ivec)).lt.thresh) cycle
+                  endIf
+                  if(jvec.ne.degen_start.and.j.ne.1) then
+                    theta = real(atan((oRVecs%at(ind,ivec)-conjg(oRVecs%at(ind+ovDim,ivec)))/&
+                      (oRVecs%at(ind,jvec)-conjg(oRVecs%at(ind+ovDim,jvec)))))
+                    vec2process = oRVecs%vat([0],[ivec])
+                    call oRVecs%vput(cos(theta)*vec2process-sin(theta)*oRVecs%vat([0],[jvec]),[0],[ivec])
+                    call oRVecs%vput(sin(theta)*vec2process+cos(theta)*oRVecs%vat([0],[jvec]),[0],[jvec])
+                  endIf
+                  phi = real((-1)*cmplx(0.0,1.0)*log(conjg(oRVecs%at(ind+ovDim,ivec))/oRVecs%at(ind,ivec))/2.0)
+                  call oRVecs%vput(exp(cmplx(0.0,1.0)*phi)*oRVecs%vat([0],[ivec]),[0],[ivec])
+                  exit
+                endDo
+              endDo
+
+              if(mqc_matrix_norm(oRVecs%mat([1,ovDim],[degen_start,degen_end])-&
+                conjg(oRVecs%mat([ovDim+1,2*ovDim],[degen_start,degen_end]))).lt.thresh) exit
+              if(l.eq.maxIters) call mqc_error('Failed to put eigenvectors in eta norm zero format')
+         
             endDo
-            if(abs(oRVecs%at(ind,i)-oRVecs%at(ind,i+1)+oRVecs%at(ind+ovDim,i)+oRVecs%at(ind+ovDim,i+1)).gt.thresh) then
-              theta = atan((oRVecs%at(ind,i)+oRVecs%at(ind,i+1)-oRVecs%at(ind+ovDim,i)+oRVecs%at(ind+ovDim,i+1))/&
-                ((-1)*oRVecs%at(ind,i)+oRVecs%at(ind,i+1)-oRVecs%at(ind+ovDim,i)-oRVecs%at(ind+ovDim,i+1)))
-              x = cos(theta)
-              y = sin(theta)
-              vec2process = oRVecs%vat([0],[i])
-              call oRVecs%vput(x*vec2process-y*oRVecs%vat([0],[i+1]),[0],[i])
-              call oRVecs%vput(y*vec2process+x*oRVecs%vat([0],[i+1]),[0],[i+1])
-            else
-              theta = ((oRVecs%at(ind+ovDim,i+1)-oRVecs%at(ind,i+1))**2)/((oRVecs%at(ind,i)-oRVecs%at(ind+ovDim,i))**2) 
-              x = sqrt(theta/(1+theta))
-              y = sqrt(1-x**2)
-              vec2process = oRVecs%vat([0],[i])
-              call oRVecs%vput(x*vec2process+y*oRVecs%vat([0],[i+1]),[0],[i])
-              if(abs(abs(oRVecs%at(ind,i))-abs(oRVecs%at(ind+ovDim,i))).gt.thresh) then
-                call oRVecs%vput(x*vec2process-y*oRVecs%vat([0],[i+1]),[0],[i])
-                call oRVecs%vput(y*vec2process+x*oRVecs%vat([0],[i+1]),[0],[i+1])
-              else
-                call oRVecs%vput(y*vec2process-x*oRVecs%vat([0],[i+1]),[0],[i+1])
-              endIf
-            endIf
-          endIf
-        endDo
-        do i = 1, size(oRVecs,2)
-          ind = mqc_vector_Scalar_at(mqc_vector_argsort(oRVecs%vat([1,ovDim],[i])),ovDim)
-          if(oRVecs%at(ind,i)+oRVecs%at(ind+ovDim,i).le.thresh) call oRVecs%vput(cmplx(0.0,1.0)*oRVecs%vat([0],[i]),[0],[i])
+
+          else
+!           Only possible option is we have a nondegenerate eigenvector, so we 
+!           should already be in correct vector form. Just cycle.
+            cycle
+          endif
+         
         endDo
         if(iPrint.ge.4) call oRVecs%print(6,'Zero eta-norm eigenvectors')
       endIf
@@ -377,8 +414,8 @@
           vec2process = vec2process*cmplx(0.0,1.0)
         endIf
         do i = 1, ovDim
-          elem1 = mod(i-1,nAlpha)+1+nBasis*((i-1)/(2*nAlpha*(nBasis-nAlpha)))
-          elem2 = nAlpha+mod((i-1)/nAlpha,nBasis-nAlpha)+1+nBasis*(mod((i-1)/(nAlpha*(nBasis-nAlpha)),2))
+!          elem1 = mod(i-1,nAlpha)+1+nBasis*((i-1)/(2*nAlpha*(nBasis-nAlpha)))
+!          elem2 = nAlpha+mod((i-1)/nAlpha,nBasis-nAlpha)+1+nBasis*(mod((i-1)/(nAlpha*(nBasis-nAlpha)),2))
           elem1 = mod(i-1,nAlpha)+1+nBasis*(mod((i-1)/(nAlpha*(nBasis-nAlpha)),2))
           elem2 = nAlpha+mod((i-1)/nAlpha,nBasis-nAlpha)+1+nBasis*((i-1)/(2*nAlpha*(nBasis-nAlpha)))
           call rotation_matrix%put(rotation_matrix%at(elem1,elem2)+sin((-1)*step*real(vec2process%at(i))),&
