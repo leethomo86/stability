@@ -20,7 +20,7 @@
       character(len=1)::wf_type
       character(len=256)::vecString,otype='chk',file_tmp
       integer(kind=int64)::iOut=6,iPrint=1,iUnit,flag,i,j,k,l,nAlpha,nBeta,nBasis,ovDim,oRHessDim,&
-        occ1,occ2,virt1,virt2,ind,ind2,neigs2print=5,vecfollow=0,elem1,elem2,maxIters=1000,degen_start, &
+        occ1,occ2,virt1,virt2,ind,ind2,neigs2print=5,elem1,elem2,maxIters=1000,degen_start, &
         degen_end,ivec,jvec
       real(kind=real64)::vecThresh=0.1,step=0.05
       real(kind=real64),parameter::thresh=1.0e-10
@@ -31,7 +31,7 @@
       type(mqc_scf_integral)::core_hamiltonian,mo_coefficients,fock,density,GMat
       type(mqc_matrix)::OrbRotHess,oRVecs,rotation_matrix,sh2AtMp,shlTyp,nPrmSh,prmExp,conCoef,&
         conCoTwo,shCoor
-      type(mqc_vector)::oREigs,vec2process
+      type(mqc_vector)::oREigs,vec2process,vecfollow
       type(mqc_scf_eigenvalues)::mo_energies
       logical::degen_flag
 !
@@ -92,13 +92,14 @@
           j = i + 2
         elseif(command.eq.'--follow') then
 !
-!*      --follow vector                  Specifies the vector to follow when returning a matrix
-!*                                       file with a perturbed set of molecular orbitals. Default 
-!*                                       is not to return a matrix file which is 0.
+!*      --follow vector                  Specifies the vectors to follow when returning a matrix
+!*                                       file with a perturbed set of molecular orbitals. Input 
+!*                                       vectors are given as a column separated list enclosed in 
+!*                                       square brackets. The default is not to return a matrix file.
 !
 !*
           call mqc_get_command_argument(i+1,command)
-          read(command,'(I5)') vecFollow
+          call eigenfollow(command,vecFollow)
           j = i + 2
         elseif(command.eq.'--step') then
 !
@@ -407,28 +408,29 @@
 !
 !     Build a rotation matrix to follow the specified root
 !
-      if(vecfollow.ne.0) then
-        call rotation_matrix%identity(nBasis*2,nBasis*2)
-        vec2process = oRVecs%vat([0],[vecfollow])
-        if(wf_string.eq.'C'.and..not.wf_complex) then
-          vec2process = vec2process*cmplx(0.0,1.0)
-        endIf
-        do i = 1, ovDim
-!          elem1 = mod(i-1,nAlpha)+1+nBasis*((i-1)/(2*nAlpha*(nBasis-nAlpha)))
-!          elem2 = nAlpha+mod((i-1)/nAlpha,nBasis-nAlpha)+1+nBasis*(mod((i-1)/(nAlpha*(nBasis-nAlpha)),2))
-          elem1 = mod(i-1,nAlpha)+1+nBasis*(mod((i-1)/(nAlpha*(nBasis-nAlpha)),2))
-          elem2 = nAlpha+mod((i-1)/nAlpha,nBasis-nAlpha)+1+nBasis*((i-1)/(2*nAlpha*(nBasis-nAlpha)))
-          call rotation_matrix%put(rotation_matrix%at(elem1,elem2)+sin((-1)*step*real(vec2process%at(i))),&
-            elem1,elem2)
-          call rotation_matrix%put(rotation_matrix%at(elem1,elem2)+&
-            cmplx(0.0,float(sin((-1)*step*aimag(vec2process%at(i))))),elem1,elem2)
-          call rotation_matrix%put(rotation_matrix%at(elem2,elem1)+sin(step*real(conjg(vec2process%at(i)))),&
-            elem2,elem1)
-          call rotation_matrix%put(rotation_matrix%at(elem2,elem1)+&
-            cmplx(0.0,float(sin(step*aimag(conjg(vec2process%at(i)))))),elem2,elem1)
+      if(size(vecfollow).ne.0) then
+        call vecFollow%print(6,'Followed eigenvectors')
+        do j = 1, size(vecFollow)
+          call rotation_matrix%identity(nBasis*2,nBasis*2)
+          vec2process = oRVecs%vat([0],[int(vecfollow%at(j))])
+          if(wf_string.eq.'C'.and..not.wf_complex) then
+            vec2process = vec2process*cmplx(0.0,1.0)
+          endIf
+          do i = 1, ovDim
+            elem1 = mod(i-1,nAlpha)+1+nBasis*(mod((i-1)/(nAlpha*(nBasis-nAlpha)),2))
+            elem2 = nAlpha+mod((i-1)/nAlpha,nBasis-nAlpha)+1+nBasis*((i-1)/(2*nAlpha*(nBasis-nAlpha)))
+            call rotation_matrix%put(rotation_matrix%at(elem1,elem2)+sin((-1)*step*real(vec2process%at(i))),&
+              elem1,elem2)
+            call rotation_matrix%put(rotation_matrix%at(elem1,elem2)+&
+              cmplx(0.0,float(sin((-1)*step*aimag(vec2process%at(i))))),elem1,elem2)
+            call rotation_matrix%put(rotation_matrix%at(elem2,elem1)+sin(step*real(conjg(vec2process%at(i)))),&
+              elem2,elem1)
+            call rotation_matrix%put(rotation_matrix%at(elem2,elem1)+&
+              cmplx(0.0,float(sin(step*aimag(conjg(vec2process%at(i)))))),elem2,elem1)
+          endDo
+          if(iPrint.ge.3) call rotation_matrix%print(iOut,'Orbital perturbation matrix '//trim(num2char(vecFollow%at(j))))
+          mo_coefficients = matmul(mo_coefficients,rotation_matrix)
         endDo
-        if(iPrint.ge.3) call rotation_matrix%print(iOut,'Orbital perturbation matrix')
-        mo_coefficients = matmul(mo_coefficients,rotation_matrix)
         if(iPrint.ge.2) call mo_coefficients%print(iOut,'Perturbed MOs')
 
         if(MQC_Matrix_Norm(mo_coefficients%getBlock('alpha')-mo_coefficients%getBlock('beta')).lt.thresh.and.&
@@ -554,6 +556,85 @@
 !
     end subroutine write_output_file
 !    
+!
+    subroutine eigenfollow(string_in,vector_out)
+!
+!   Determine list of eigenvectors to follow.
+!
+!   string_in: string to be parsed
+!   vector_out: output vector
+!
+    implicit none
+!
+!   input/output variables
+    character(len=*),intent(in)::string_in
+    type(mqc_vector),intent(inOut)::vector_out
+
+!   text parsing variables
+    character(len=80)::processString
+    integer::i,evec
+    logical::newNum
+
+    do i = 1,len(string_in)
+      select case (string_in(i:i))
+      case('[','\(')
+        if(i.eq.1) then
+          newNum = .true.
+          cycle
+        else
+          call mqc_error_A('Eigenvector following selection input format incorrect',6,'string_in', &
+            string_in)
+        endIf
+      case(']','\)')
+        if(i.eq.len(string_in).and..not.newNum.and.i.ne.1) then
+          read(processString,'(I10)') evec
+          if(vector_out%size().ge.1) then
+            if(vector_out%at(-1).ge.evec) &
+              call mqc_error_I('Trying to specify eigenvectors to follow out of order',&
+              6,'last',int(vector_out%at(-1)),'entry',evec)
+          endIf
+          call vector_out%push(evec)
+          exit
+        else
+          call mqc_error_A('Eigenvector following selection input format incorrect',6,'string_in', &
+            string_in)
+        endIf
+      case('0':'9')
+        if(i.eq.1.or.i.eq.len(string_in)) then
+          call mqc_error_A('Eigenvector following selection input format incorrect',6,'string_in', &
+            string_in)
+        else
+          if(newNum) then
+            processString = string_in(i:i)
+          else
+            processString = trim(processString)//string_in(i:i)
+          endIf
+          newNum = .false.
+          cycle
+        endIf
+      case(',',' ')
+        if(i.eq.1.or.i.eq.len(string_in).or.i.eq.2.or.i.eq.len(string_in)-1.or.newNum) then
+          call mqc_error_A('Eigenvector following selection input format incorrect',6,'string_in', &
+            string_in)
+        else
+          read(processString,'(I10)') evec
+          if(vector_out%size().ge.1) then
+            if(vector_out%at(-1).ge.evec) &
+              call mqc_error_I('Trying to specify eigenvectors to follow out of order', &
+              6,'last',int(vector_out%at(-1)),'entry',evec)
+          endIf
+          call vector_out%push(evec)
+          newNum = .true.
+          cycle
+        endIf
+      case default
+        call mqc_error_A('Unrecognised character in eigenvector following input format', &
+          6,'value',string_in(i:i))
+      endselect
+    endDo
+!  
+    end subroutine eigenfollow 
+!
 !
 !*    NOTES
 !*      Compilation of this program requires the MQC library (https://github.com/MQCPack/mqcPack)
