@@ -16,29 +16,30 @@
 !
       implicit none
       type(mqc_gaussian_unformatted_matrix_file)::fileInfo 
-      character(len=:),allocatable::command,fileName,help_path,wf_string,outputfile
+      character(len=:),allocatable::command,fileName,help_path,wf_string,outputfileIn,outputFile
       character(len=1)::wf_type
-      character(len=256)::vecString,otype='chk',file_tmp
+      character(len=256)::vecString,otype='chk',file_tmp,coordinate=''
       integer(kind=int64)::iOut=6,iPrint=1,iUnit,flag,i,j,k,l,nAlpha,nBeta,nBasis,ovDim,oRHessDim,&
-        occ1,occ2,virt1,virt2,ind,ind2,neigs2print=5,elem1,elem2,maxIters=1000,degen_start, &
-        degen_end,ivec,jvec
-      real(kind=real64)::vecThresh=0.1,step=0.05
-      real(kind=real64),parameter::thresh=1.0e-10
+        occ1,occ2,virt1,virt2,ind,ind2,neigs2print=5,elem1,elem2,maxIters=5000,degen_start, &
+      degen_end,ivec,jvec,iter,maxSteps=1,vpos,jEnd
+      real(kind=real64)::vecThresh=0.1,initStep=0.05,step,connectThresh=5.0
+      real(kind=real64),parameter::thresh=1.0e-10,etaThresh=1.0e-4,zero=1.0e-12,convThresh=1.0e-8, &
+        followThresh=1.0e-3
       logical::found,wf_complex,doUHF,doGHF,doComplex,file_exists
       type(mqc_molecule_data)::moleculeInfo
-      type(mqc_twoERIs),dimension(:),allocatable::eris
-      type(mqc_scalar)::Vnn,val,phi,theta
-      type(mqc_scf_integral)::core_hamiltonian,mo_coefficients,fock,density,GMat
+      type(mqc_twoERIs),dimension(:),allocatable::AOeris,eris
+      type(mqc_scalar)::Vnn,phi,theta,energy,vval,optangle
+      type(mqc_scf_integral)::core_hamiltonian,mo_coefficients,fock,AOfock,density,GMat,overlap
       type(mqc_matrix)::OrbRotHess,oRVecs,rotation_matrix,sh2AtMp,shlTyp,nPrmSh,prmExp,conCoef,&
-        conCoTwo,shCoor
-      type(mqc_vector)::oREigs,vec2process,vecfollow
+        conCoTwo,shCoor,initialORVecs
+      type(mqc_vector)::oREigs,vec2process,vecfollow,linearFock,cumvec,vec_overlap
       type(mqc_scf_eigenvalues)::mo_energies
-      logical::degen_flag
+      logical::degen_flag,newtonFlag
 !
 !*    USAGE
 !*      stable [-f <matrix_file>] [--print-level <print_level>] [--neigs <neigs>] [--vecThresh <vecThresh>]
-!*        [--follow <vector>] [--step <step>] [--wf-test <wf_string>] [--otype <extension>] [-o <output_file>] 
-!*        [--help]
+!*        [--otype <extension>] [-o <output_file>] [--wf-test <wf_string>] [--follow <vector>] 
+!*        [--coordinate <coordinate>] [--step <step>] [--nsteps <nSteps>] [--connect-angle <angle>] [--help]
 !*
 !*    OPTIONS
 !* 
@@ -48,7 +49,7 @@
       write(IOut,'(*(A))') NEW_LINE('a'),' ',repeat('*',73),NEW_LINE('a'), &
           '  SCF Stability Calculator',NEW_LINE('a'), &
           ' ',repeat('*',73),NEW_LINE('a'), &
-          NEW_LINE('a'),repeat(' ',30),'Version 22.05.1',NEW_LINE('a'),NEW_LINE('a'),&
+          NEW_LINE('a'),repeat(' ',30),'Version 23.08.1',NEW_LINE('a'),NEW_LINE('a'),&
           ' L. M. Thompson, Louisville KY, 2022.',NEW_LINE('a')
 !
 !     Parse input options.
@@ -90,28 +91,23 @@
           call mqc_get_command_argument(i+1,command)
           read(command,'(F10.3)') vecThresh
           j = i + 2
-        elseif(command.eq.'--follow') then
+        elseIf(command.eq.'--otype') then
 !
-!*      --follow vector                  Specifies the vectors to follow when returning a matrix
-!*                                       file with a perturbed set of molecular orbitals. Input 
-!*                                       vectors are given as a column separated list enclosed in 
-!*                                       square brackets. The default is not to return a matrix file.
-!
+!*      --otype extension                Format of output file. Options are:
+!*                                       1) chk (default)
+!*                                       2) mat
 !*
           call mqc_get_command_argument(i+1,command)
-          call eigenfollow(command,vecFollow)
-          j = i + 2
-        elseif(command.eq.'--step') then
+          otype = command
+          j = i+2
+        elseIf(command.eq.'-o') then
 !
-!*      --step step-size                 Size of step when following a vector to return perturbed 
-!*                                       set of molecular orbitals. As only first order Zassenhaus 
-!*                                       formula is implemented, only small step sizes should be used.
-!*                                       Default is 0.05. 
-!
+!*      -o output_file                   Output file name. Default is input file name.
 !*
-          call mqc_get_command_argument(i+1,command)
-          read(command,'(F10.5)') step
-          j = i + 2
+          call mqc_get_command_argument(i+1,outputFileIn)
+          j = i+2
+!*   2. Stability test
+!*
         elseIf(command.eq.'--wf-test') then
 !
 !*      --wf-test test_string            Specifies the type of instability to be tested. Note that
@@ -129,21 +125,71 @@
           wf_string = trim(command)
           if (.not.any(['R','C','A'].eq.wf_string)) call mqc_error_a('Unrecognized symmetry input',iOut,'wf_string',wf_string)
           j = i+2
-        elseIf(command.eq.'--otype') then
+!*   3. Vector following
+!*
+        elseif(command.eq.'--follow') then
 !
-!*      --otype extension                Format of output file. Options are:
-!*                                       1) chk (default)
-!*                                       2) mat
+!*      --follow vector                  Specifies the vectors to follow when returning a matrix
+!*                                       file with a perturbed set of molecular orbitals. Input 
+!*                                       vectors are given as a column separated list enclosed in 
+!*                                       square brackets. The default is not to return a matrix file.
+!
 !*
           call mqc_get_command_argument(i+1,command)
-          otype = command
-          j = i+2
-        elseIf(command.eq.'-o') then
+          call eigenfollow(command,vecFollow)
+          j = i + 2
+        elseIf(command.eq.'--coordinate') then
 !
-!*      -o output_file                   Output file name. Default is input file name.
+!*      --coordinate coordinate          Specifies which coordinate type to follow
+!*                                       1) eigenvector (default)
+!*                                          Step in the direction of the raw Hessian eigenvectors.
+!*                                       2) gradient 
+!*                                          Step in the direction of the gradient.
+!*                                       3) newton
+!*                                          Step in the direction of the gradient projected onto
+!*                                          the Hessian eigenvectors.
+!*                                       4) connect 
+!*                                          Step in the direction of the solution connected by
+!*                                          the specified Hessian eigenvectors. This option does
+!*                                          eigenvector steps until the projected gradient along 
+!*                                          the specified Hessian eigenvectors becomes too small.
 !*
-          call mqc_get_command_argument(i+1,outputFile)
+          call mqc_get_command_argument(i+1,command)
+          coordinate = command
+          if(coordinate.ne.'eigenvector'.and.coordinate.ne.'gradient'.and.&
+            coordinate.ne.'newton'.and.coordinate.ne.'connect') &
+            call mqc_error_a('Argument to --coordinate not recognized',6,'coordinate',coordinate)
           j = i+2
+        elseif(command.eq.'--step') then
+!
+!*      --step step-size                 Size of step when following a vector to return perturbed 
+!*                                       set of molecular orbitals. As only first order Zassenhaus 
+!*                                       formula is implemented, only small step sizes should be used.
+!*                                       Default is 0.05. 
+!
+!*
+          call mqc_get_command_argument(i+1,command)
+          read(command,'(F10.5)') initStep
+          j = i + 2
+        elseif(command.eq.'--nsteps') then
+!
+!*      --nsteps steps                   Number of steps when following a vector. Default is 1. 
+!
+!*
+          call mqc_get_command_argument(i+1,command)
+          read(command,'(I5)') maxSteps
+          j = i + 2
+        elseif(command.eq.'--connect-angle') then
+!
+!*      --connect-angle angle            The angle from perpendicular of the gradient and step vector
+!*                                       to specify when the connect algorithm should switch
+!*                                       from following the eigenvector to doing Newton steps.
+!
+!*
+          call mqc_get_command_argument(i+1,command)
+          read(command,'(F10.5)') connectThresh
+          j = i + 2
+!*   4. Help
         elseIf(command.eq.'--help') then
 !
 !*      --help                           Output help documentation to terminal.
@@ -162,7 +208,6 @@
 !
 !     Parse input file and extract required data from matrix files.
 !
-      allocate(eris(1))
       call fileInfo%load(fileName)
       call fileInfo%getMolData(moleculeInfo)
       Vnn = mqc_get_nuclear_repulsion(moleculeInfo)
@@ -172,6 +217,7 @@
       nBasis = fileInfo%getVal('nBasis')
       nAlpha = fileInfo%getVal('nAlpha')
       nBeta = fileInfo%getVal('nBeta')
+      ovDim = 2*nBasis*(nAlpha+nBeta)-2*nAlpha*nBeta-nAlpha**2-nBeta**2 
 
       call fileInfo%getArray('SHELL TO ATOM MAP',sh2AtMp)
       call fileInfo%getArray('SHELL TYPES',shlTyp)
@@ -182,40 +228,46 @@
       call fileInfo%getArray('COORDINATES OF EACH SHELL',shCoor)
       call fileInfo%getESTObj('mo energies',est_eigenvalues=mo_energies)
 
+      allocate(AOeris(1),eris(1))
+      call fileInfo%get2ERIs('regular',AOeris(1))
+      call fileInfo%getESTObj('overlap',est_integral=overlap)
       call fileInfo%getESTObj('mo coefficients',est_integral=mo_coefficients)
       if(iPrint.ge.2) call mo_coefficients%print(iOut,'MO coefficients')
-      call fileInfo%getESTObj('fock',est_integral=fock,foundObj=found)
-      if(.not.found) then
-        call fileInfo%getESTObj('core hamiltonian',est_integral=core_hamiltonian)
-        if(iPrint.ge.2) call core_hamiltonian%print(iOut,'Core Hamiltonian')
-        call fileInfo%getESTObj('density',est_integral=density,foundObj=found)
-        if(.not.found) then
-          density = matmul(mo_coefficients%orbitals('occupied',[nAlpha],[nBeta]), &
-            dagger(mo_coefficients%orbitals('occupied',[nAlpha],[nBeta])))
-        endIf
+      call fileInfo%getESTObj('core hamiltonian',est_integral=core_hamiltonian)
+      if(iPrint.ge.2) call core_hamiltonian%print(iOut,'Core Hamiltonian')
+!
+!     If we are performing eigenvector following routine, we start loop here with updated MO 
+!     coefficients (all AO integrals are assumed to be the same). 
+!
+      call cumvec%init(ovDim)
+      newtonFlag = .false.
+      do iter = 1, maxSteps
+        write(*,*) '--------------'
+        write(*,*) 'Step: ',iter
+        write(*,*) '--------------'
+
+        density = matmul(mo_coefficients%orbitals('occupied',[nAlpha],[nBeta]), &
+          dagger(mo_coefficients%orbitals('occupied',[nAlpha],[nBeta])))
         if(iPrint.ge.2) call density%print(iOut,'Density matrix')
-        call fileInfo%get2ERIs('regular',eris(1))
-        Gmat = contraction(eris,density)
-        if(iPrint.ge.3) call Gmat%print(iOut,'G(P)')
-        fock = core_hamiltonian + Gmat
-      else
-        call fileInfo%get2ERIs('regular',eris(1),foundERI=found)
-        if(.not.found) call fileInfo%get2ERIs('molecular',eris(1))
-      endIf
-      if(iPrint.ge.2) call fock%print(iOut,'Fock matrix')
-      if(iPrint.ge.4) call eris(1)%print(iOut,'AO 2ERIs') 
-      if(eris(1)%type().eq.'regular')  call twoERI_trans(iOut,iPrint,mo_coefficients,eris(1),eris(1))
+        Gmat = contraction(AOeris,density)
+        energy = contraction(core_hamiltonian,density)+0.5*contraction(density%swapODB(),Gmat)+Vnn
+        call energy%print(6,'Hartree-Fock Energy',FormatStr='F20.12')
+!
+!     Compute MO Fock matrix (orbital rotation gradient)
+!
+      AOfock = core_hamiltonian + Gmat
+      fock = matmul(matmul(dagger(mo_coefficients),AOfock),mo_coefficients)
+      if(iPrint.ge.2) call fock%print(iOut,'MO Fock matrix')
+      call twoERI_trans(iOut,iPrint,mo_coefficients,AOeris(1),eris(1))
       if(iPrint.ge.4) call eris(1)%print(iOut,'MO 2ERIs') 
 !
-!     Establish the symmetry of the input wavefunction and the instability to be tested
+!     Establish the symmetry of the input wavefunction and the instability to be tested.
+!     If doing eigenvector following, symmetry may have changed, so ignore input symmetry
+!     request. 
 !
-      call MQC_Gaussian_ICGU(fileInfo%icgu,wf_type,wf_complex)
-      if(wf_type.eq.'G'.and.wf_complex) then
-        if(mqc_matrix_norm(aimag(fock%getBlock())).lt.thresh) then
-          wf_complex = .false.
-        endIf
-      endIf
-      if(.not.allocated(wf_string)) wf_string = ''
+      wf_complex = .false.
+      if(mqc_matrix_norm(aimag(fock%getBlock())).gt.thresh) wf_complex = .true.
+      if(.not.allocated(wf_string).or.iter.gt.1) wf_string = ''
       if (len(wf_string).eq.0) then
         if(wf_complex) then
           wf_string = 'C'
@@ -232,33 +284,32 @@
         call mqc_error_A(' Requesting real instability test but wavefunction is already complex', &
         6,'wf_string',wf_string)
       if(wf_string.eq.'A') wf_complex=.true.
-!
-!     Compute MO Fock matrix (orbital rotation gradient)
-!
-      fock = matmul(matmul(dagger(mo_coefficients),fock),mo_coefficients)
-      if(iPrint.ge.2) call fock%print(iOut,'Orbital Rotation Gradient')
 
-      ovDim = 2*nBasis*(nAlpha+nBeta)-2*nAlpha*nBeta-nAlpha**2-nBeta**2 
-!
       if(wf_complex) then
         oRHessDim = 2*ovDim
       else
         oRHessDim = ovDim
       endIf 
+      call linearFock%init(oRHessDim)
       call orbRotHess%init(oRHessDim,oRHessDim)
 !
       do i = 1,ovDim 
+!
+!       Extract orbital indices (related to the index in the MO Fock matrix)
+!
+        occ1 = mod(i-1,nAlpha)+1
+        virt1 = nAlpha+mod((i-1)/nAlpha,nBasis-nAlpha)+1
+        if((i-1)/(2*nAlpha*(nBasis-nAlpha))+1.eq.2) occ1 = occ1+nBasis
+        if(mod((i-1)/(nAlpha*(nBasis-nAlpha)),2)+1.eq.2) virt1 = virt1+nBasis
+        call linearFock%put(fock%at(occ1,virt1),i)
+          
         do j = 1,i
 !
 !         Extract orbital indices (related to the index in the MO Fock matrix)
 !
-          occ1 = mod(i-1,nAlpha)+1
           occ2 = mod(j-1,nAlpha)+1
-          virt1 = nAlpha+mod((i-1)/nAlpha,nBasis-nAlpha)+1
           virt2 = nAlpha+mod((j-1)/nAlpha,nBasis-nAlpha)+1
-          if((i-1)/(2*nAlpha*(nBasis-nAlpha))+1.eq.2) occ1 = occ1+nBasis
           if((j-1)/(2*nAlpha*(nBasis-nAlpha))+1.eq.2) occ2 = occ2+nBasis
-          if(mod((i-1)/(nAlpha*(nBasis-nAlpha)),2)+1.eq.2) virt1 = virt1+nBasis
           if(mod((j-1)/(nAlpha*(nBasis-nAlpha)),2)+1.eq.2) virt2 = virt2+nBasis
 !
 !         Build A block of orbital rotation Hessian
@@ -286,28 +337,30 @@
       if(wf_complex) then
         call orbRotHess%mput(conjg(orbRotHess%mat([1,ovDim],[1,ovDim])),[ovDim+1,-1],[ovDim+1,-1])
         call orbRotHess%mput(conjg(orbRotHess%mat([1,ovDim],[ovDim+1,-1])),[ovDim+1,-1],[1,ovDim])
+        call linearFock%vput(conjg(linearFock%vat(1,ovDim)),ovDim+1)
       endIf
-      if(iPrint.ge.3) call orbRotHess%print(6,'Orbital rotation Hessian')
+      if(iPrint.ge.3) call linearFock%print(iOut,'Orbital rotation gradient')
+      call mqc_print(sqrt(dot_product(dagger(linearFock),linearFock)),iOut,'Gradient norm',formatStr='F14.8')
+      if(iPrint.ge.3) call orbRotHess%print(iOut,'Orbital rotation Hessian')
       call orbRotHess%diag(oREigs,oRVecs)
-      if(iPrint.ge.2) call oREigs%print(6,'Orbital rotation eigenvalues')
-      if(iPrint.ge.3) call oRVecs%print(6,'Orbital rotation eigenvectors')
+      if(iPrint.ge.2) call oREigs%print(iOut,'Orbital rotation Hessian eigenvalues')
+      if(iPrint.ge.3) call oRVecs%print(iOut,'Orbital rotation Hessian eigenvectors')
 !
 !     Ensure eigenvectors have vanishing eta norm 
 !
       if(wf_complex) then
         degen_flag = .false.
         do i = 1, size(oREigs)-1
-
-          if(abs(oREigs%at(i)-oREigs%at(i+1)).lt.thresh.and..not.degen_flag) then
+          if(abs(oREigs%at(i)-oREigs%at(i+1)).lt.etathresh.and..not.degen_flag) then
 !           We have found the start of a degenerate block. Make record as 
 !           necessary.
             degen_start = i
             degen_flag = .true.
             cycle
-          elseIf(abs(oREigs%at(i)-oREigs%at(i+1)).lt.thresh.and.degen_flag) then
+          elseIf(abs(oREigs%at(i)-oREigs%at(i+1)).lt.etathresh.and.degen_flag) then
 !           We are in the middle of a degenerate block, nothing to do for now.
             cycle
-          elseIf(abs(oREigs%at(i)-oREigs%at(i+1)).ge.thresh.and.degen_flag) then
+          elseIf(abs(oREigs%at(i)-oREigs%at(i+1)).ge.etathresh.and.degen_flag) then
 !           We have found the end of a degenerate block, time to cycle through 
 !           until vectors are in the correct form.
             degen_end = i
@@ -351,8 +404,14 @@
               endDo
 
               if(mqc_matrix_norm(oRVecs%mat([1,ovDim],[degen_start,degen_end])-&
-                conjg(oRVecs%mat([ovDim+1,2*ovDim],[degen_start,degen_end]))).lt.thresh) exit
-              if(l.eq.maxIters) call mqc_error('Failed to put eigenvectors in eta norm zero format')
+                conjg(oRVecs%mat([ovDim+1,2*ovDim],[degen_start,degen_end]))).lt.convThresh) exit
+              if(l.eq.maxIters) then
+                call mqc_print(mqc_matrix_norm(oRVecs%mat([1,ovDim],[degen_start,degen_end])-&
+                  conjg(oRVecs%mat([ovDim+1,2*ovDim],[degen_start,degen_end]))),iOut,&
+                  'Failed to put eigenvectors in eta norm zero format, convergence',formatStr='F20.12')
+                call mqc_print(oRVecs%mat([0],[degen_start,degen_end]),iOut,'Final eigenvectors')
+                call mqc_error('')
+              endIf
          
             endDo
 
@@ -363,8 +422,9 @@
           endif
          
         endDo
-        if(iPrint.ge.4) call oRVecs%print(6,'Zero eta-norm eigenvectors')
+        if(iPrint.ge.3) call oRVecs%print(6,'Zero eta-norm eigenvectors')
       endIf
+      if(iter.eq.1) initialORVecs = orVecs
 !
 !     Print the eigenvalues and eigenvectors
 !
@@ -406,32 +466,94 @@
         endDo
       endDo
 !
+!     If eigenvector following, check for convergence to new stationary point and exit if converged.
+!
+      if(len(coordinate).gt.0.and.iter.gt.1) then
+        if(sqrt(dot_product(dagger(linearFock),linearFock)).lt.followThresh) then
+          write(iOut,'(1X,A)') 'Convergence to new stationary point'
+          exit
+        endIf
+      endIf
+!
 !     Build a rotation matrix to follow the specified root
 !
       if(size(vecfollow).ne.0) then
-        call vecFollow%print(6,'Followed eigenvectors')
-        do j = 1, size(vecFollow)
-          call rotation_matrix%identity(nBasis*2,nBasis*2)
-          vec2process = oRVecs%vat([0],[int(vecfollow%at(j))])
-          if(wf_string.eq.'C'.and..not.wf_complex) then
-            vec2process = vec2process*cmplx(0.0,1.0)
+        if(wf_string.eq.'C'.and..not.wf_complex) oRVecs = oRVecs*cmplx(0.0,1.0)
+
+        if(iter.eq.1.or.coordinate.eq.'eigenvector'.or.&
+          (coordinate.eq.'connect'.and..not.newtonFlag)) then
+          jEnd = size(vecFollow)
+        else
+          jEnd = 1
+        endIf
+
+        do j = 1, jEnd
+          if(iter.eq.1.or.coordinate.eq.'eigenvector'.or.&
+            (coordinate.eq.'connect'.and..not.newtonflag)) then
+            vec_overlap = matmul(dagger(initialORVecs%vat([1,size(ORVecs,1)],[int(vecfollow%at(j))])),oRVecs)
+            if(iPrint.ge.3) call mqc_print(vec_overlap,iOut,'Overlap of eigenvectors with previous step vector')
+            vpos = maxloc(abs(vec_overlap))
+            vval = mqc_vector_scalar_at(vec_overlap,vpos)
+            if(abs(vval).lt.thresh) exit
+            if(abs(real(vval)).le.zero.and.abs(aimag(vval)).gt.zero) then
+              theta = (-1)*asin(aimag(vval)/(sqrt(real(vval)**2+aimag(vval)**2)))
+            elseIf(abs(aimag(vval)).le.zero.and.abs(real(vval)).gt.zero) then
+              theta = (-1)*acos(real(vval)/(sqrt(real(vval)**2+aimag(vval)**2)))
+            elseIf(abs(real(vval)).gt.zero.and.abs(aimag(vval)).gt.zero) then
+              theta = (-1)*atan2(vval)
+            else
+              theta = zero
+            endIf
+            vval = dot_product(dagger(cmplx(cos(theta),sin(theta))*oRVecs%vat([0],[vpos])),&
+              initialORVecs%vat([1,size(ORVecs,1)],[int(vecfollow%at(j))]))
+            vec2process = cmplx(cos(theta),sin(theta))*oRVecs%vat([0],[vpos])
+            write(iOut,'(1X,A)') 'Eigenvector following information -- Initial:'//&
+              trim(num2char(vecFollow%at(j),'I3'))//', Current: '//trim(num2char(vpos,'I3'))//&
+              ', Overlap: '//trim(num2char(vval,'F10.6'))
+!           update the old vector followed to the previous iteration
+            call initialoRVecs%vput(vec2process,[0],[int(vecfollow%at(j))]) 
+            step = initStep
+          elseIf(coordinate.eq.'gradient') then
+            vec2process = (-1)*linearFock
+            step = initStep
+          elseIf(coordinate.eq.'newton'.or.newtonFlag) then
+            if(coordinate.eq.'eigenvector') write(iOut,'(1X,A)') &
+              'Angle between eigenvector and gradient too small, swapping to Newton step'
+!            vec2process = (-1)*matmul(orbRotHess%inv(),linearFock)
+!           Below does the Newton step without inverting the Hessian but gives the same result 
+            call vec2process%init(ovDim)
+            do i = 1, ovDim
+              vec2process = vec2process - &
+                (dot_product(dagger(oRVecs%vat([0],[i])),linearFock)/oREigs%at(i))*oRVecs%vat([0],[i])
+            endDo
+            step = 1.0
           endIf
+
+          if(j.eq.jEnd) then
+            optangle = acos(dot_product(dagger((-1)*linearFock),vec2process)/&
+              (linearFock%norm()*vec2process%norm()))
+            call mqc_print(optangle*180.0/pi,6,'Angle of step vector with gradient vector')
+            if(abs(optangle*180.0/pi-90.0).lt.connectThresh) newtonflag = .true.
+        
+            if(iPrint.ge.2) call vec2process%print(iOut,'Step vector')
+            cumvec = cumvec + step*vec2process
+            if(iPrint.ge.3) call cumvec%print(iOut,'Cumulative displacement vector')
+          endIf
+
+          call rotation_matrix%init(nBasis*2,nBasis*2)
           do i = 1, ovDim
             elem1 = mod(i-1,nAlpha)+1+nBasis*(mod((i-1)/(nAlpha*(nBasis-nAlpha)),2))
             elem2 = nAlpha+mod((i-1)/nAlpha,nBasis-nAlpha)+1+nBasis*((i-1)/(2*nAlpha*(nBasis-nAlpha)))
-            call rotation_matrix%put(rotation_matrix%at(elem1,elem2)+sin((-1)*step*real(vec2process%at(i))),&
-              elem1,elem2)
-            call rotation_matrix%put(rotation_matrix%at(elem1,elem2)+&
-              cmplx(0.0,float(sin((-1)*step*aimag(vec2process%at(i))))),elem1,elem2)
-            call rotation_matrix%put(rotation_matrix%at(elem2,elem1)+sin(step*real(conjg(vec2process%at(i)))),&
-              elem2,elem1)
-            call rotation_matrix%put(rotation_matrix%at(elem2,elem1)+&
-              cmplx(0.0,float(sin(step*aimag(conjg(vec2process%at(i)))))),elem2,elem1)
+            call rotation_matrix%put((-1)*step*vec2process%at(i),elem1,elem2)
+            call rotation_matrix%put(step*conjg(vec2process%at(i)),elem2,elem1)
           endDo
+          rotation_matrix = exp(rotation_matrix)
           if(iPrint.ge.3) call rotation_matrix%print(iOut,'Orbital perturbation matrix '//trim(num2char(vecFollow%at(j))))
           mo_coefficients = matmul(mo_coefficients,rotation_matrix)
         endDo
         if(iPrint.ge.2) call mo_coefficients%print(iOut,'Perturbed MOs')
+        if(iPrint.ge.3) call mqc_print(matmul(matmul(dagger(mo_coefficients),overlap),mo_coefficients),iOut,&
+          'Molecular orbital orthogonality check')
 
         if(MQC_Matrix_Norm(mo_coefficients%getBlock('alpha')-mo_coefficients%getBlock('beta')).lt.thresh.and.&
           mqc_matrix_norm(mo_coefficients%getBlock('alpha-beta')).lt.thresh.and. &
@@ -452,11 +574,11 @@
           doComplex = .false.
         endIf
 
-
-        if(.not.allocated(outputFile)) then
-          outputFile = fileName
-          outputFile = outputFile(1:(len(fileName)-4))
+        if(.not.allocated(outputFileIn)) then
+          outputFileIn = fileName
+          outputFileIn = outputFileIn(1:(len(fileName)-4))
         endIf
+        outputFile = outputFileIn
         i = 1
         file_tmp = trim(outputfile)
         file_exists = .true.
@@ -483,6 +605,10 @@
           call mqc_error('Requested output file type not recognized')
         end select
       endIf
+!
+!     We have finished updating the MOs so loop back to redo the stability if eigenfollowing routine requested.
+!
+      endDo
 !
       contains
 

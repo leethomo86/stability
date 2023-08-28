@@ -6,8 +6,8 @@ SYNOPSIS
       Computes the stability of an SCF wavefunction.
 USAGE
       stable [-f <matrix_file>] [--print-level <print_level>] [--neigs <neigs>] [--vecThresh <vecThresh>]
-        [--follow <vector>] [--step <step>] [--wf-test <wf_string>] [--otype <extension>] [-o <output_file>] 
-        [--help]
+        [--otype <extension>] [-o <output_file>] [--wf-test <wf_string>] [--follow <vector>] 
+        [--coordinate <coordinate>] [--step <step>] [--nsteps <nSteps>] [--connect-angle <angle>] [--help]
 OPTIONS
    1. Input/output
 
@@ -23,14 +23,13 @@ OPTIONS
       --vecThresh vecThresh            Lowest limit for orbital rotation Hessian eigenvalue 
                                        component to be printed. Default is 0.1.
 
-      --follow vector                  Specifies the vector to follow when returning a matrix
-                                       file with a perturbed set of molecular orbitals. Default 
-                                       is not to return a matrix file which is 0.
+      --otype extension                Format of output file. Options are:
+                                       1) chk (default)
+                                       2) mat
 
-      --step step-size                 Size of step when following a vector to return perturbed 
-                                       set of molecular orbitals. As only first order Zassenhaus 
-                                       formula is implemented, only small step sizes should be used.
-                                       Default is 0.05. 
+      -o output_file                   Output file name. Default is input file name.
+
+   2. Stability test
 
       --wf-test test_string            Specifies the type of instability to be tested. Note that
                                        only symmetries of the same type or lower than the input
@@ -43,12 +42,39 @@ OPTIONS
                                        3) A 
                                           Test for all instabilities.
 
-      --otype extension                Format of output file. Options are:
-                                       1) chk (default)
-                                       2) mat
+   3. Vector following
 
-      -o output_file                   Output file name. Default is input file name.
+      --follow vector                  Specifies the vectors to follow when returning a matrix
+                                       file with a perturbed set of molecular orbitals. Input 
+                                       vectors are given as a column separated list enclosed in 
+                                       square brackets. The default is not to return a matrix file.
 
+      --coordinate coordinate          Specifies which coordinate type to follow
+                                       1) eigenvector (default)
+                                          Step in the direction of the raw Hessian eigenvectors.
+                                       2) gradient 
+                                          Step in the direction of the gradient.
+                                       3) newton
+                                          Step in the direction of the gradient projected onto
+                                          the Hessian eigenvectors.
+                                       4) connect 
+                                          Step in the direction of the solution connected by
+                                          the specified Hessian eigenvectors. This option does
+                                          eigenvector steps until the projected gradient along 
+                                          the specified Hessian eigenvectors becomes too small.
+
+      --step step-size                 Size of step when following a vector to return perturbed 
+                                       set of molecular orbitals. As only first order Zassenhaus 
+                                       formula is implemented, only small step sizes should be used.
+                                       Default is 0.05. 
+
+      --nsteps steps                   Number of steps when following a vector. Default is 1. 
+
+      --connect-angle angle            The angle from perpendicular of the gradient and step vector
+                                       to specify when the connect algorithm should switch
+                                       from following the eigenvector to doing Newton steps.
+
+   4. Help
       --help                           Output help documentation to terminal.
 
 NOTES
