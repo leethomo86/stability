@@ -21,18 +21,18 @@
       character(len=256)::vecString,otype='chk',file_tmp,coordinate=''
       integer(kind=int64)::iOut=6,iPrint=1,iUnit,flag,i,j,k,l,nAlpha,nBeta,nBasis,ovDim,oRHessDim,&
         occ1,occ2,virt1,virt2,ind,ind2,neigs2print=5,elem1,elem2,maxIters=5000,degen_start, &
-      degen_end,ivec,jvec,iter,maxSteps=1,vpos,jEnd
+        degen_end,ivec,jvec,iter,maxSteps=1,vpos,jEnd,sgn,old_sgn
       real(kind=real64)::vecThresh=0.1,initStep=0.05,step,connectThresh=5.0
-      real(kind=real64),parameter::thresh=1.0e-10,etaThresh=1.0e-4,zero=1.0e-12,convThresh=1.0e-8, &
-        followThresh=1.0e-3
+      real(kind=real64),parameter::thresh=1.0e-10,etaThresh=1.0e-6,zero=1.0e-12,convThresh=1.0e-8, &
+        followThresh=1.0e-7
       logical::found,wf_complex,doUHF,doGHF,doComplex,file_exists
       type(mqc_molecule_data)::moleculeInfo
       type(mqc_twoERIs),dimension(:),allocatable::AOeris,eris
-      type(mqc_scalar)::Vnn,phi,theta,energy,vval,optangle
+      type(mqc_scalar)::Vnn,phi,theta,energy,vval,optangle,convergence,old_energy
       type(mqc_scf_integral)::core_hamiltonian,mo_coefficients,fock,AOfock,density,GMat,overlap
       type(mqc_matrix)::OrbRotHess,oRVecs,rotation_matrix,sh2AtMp,shlTyp,nPrmSh,prmExp,conCoef,&
-        conCoTwo,shCoor,initialORVecs
-      type(mqc_vector)::oREigs,vec2process,vecfollow,linearFock,cumvec,vec_overlap
+        conCoTwo,shCoor,initialORVecs,tmpMat
+      type(mqc_vector)::oREigs,vec2process,vecfollow,linearFock,cumvec,vec_overlap,tmpVec
       type(mqc_scf_eigenvalues)::mo_energies
       logical::degen_flag,newtonFlag
 !
@@ -250,6 +250,7 @@
           dagger(mo_coefficients%orbitals('occupied',[nAlpha],[nBeta])))
         if(iPrint.ge.2) call density%print(iOut,'Density matrix')
         Gmat = contraction(AOeris,density)
+        if(iter.ne.1) old_energy = energy
         energy = contraction(core_hamiltonian,density)+0.5*contraction(density%swapODB(),Gmat)+Vnn
         call energy%print(6,'Hartree-Fock Energy',FormatStr='F20.12')
 !
@@ -350,17 +351,17 @@
 !
       if(wf_complex) then
         degen_flag = .false.
-        do i = 1, size(oREigs)-1
-          if(abs(oREigs%at(i)-oREigs%at(i+1)).lt.etathresh.and..not.degen_flag) then
+        do i = 1, size(oREigs)
+          if(abs(oREigs%at(i)-oREigs%at(mod(i,size(oREigs))+1)).lt.etathresh.and..not.degen_flag) then
 !           We have found the start of a degenerate block. Make record as 
 !           necessary.
             degen_start = i
             degen_flag = .true.
             cycle
-          elseIf(abs(oREigs%at(i)-oREigs%at(i+1)).lt.etathresh.and.degen_flag) then
+          elseIf(abs(oREigs%at(i)-oREigs%at(mod(i,size(oREigs))+1)).lt.etathresh.and.degen_flag) then
 !           We are in the middle of a degenerate block, nothing to do for now.
             cycle
-          elseIf(abs(oREigs%at(i)-oREigs%at(i+1)).ge.etathresh.and.degen_flag) then
+          elseIf(abs(oREigs%at(i)-oREigs%at(mod(i,size(oREigs))+1)).ge.etathresh.and.degen_flag) then
 !           We have found the end of a degenerate block, time to cycle through 
 !           until vectors are in the correct form.
             degen_end = i
@@ -380,8 +381,12 @@
                       if(j.ne.1) then
                         cycle 
                       else
-!                       If we don't have any choice with a non-zero element, we can only do the phi rotation, so pick the
-!                       largest element.
+!                       If we don't have any choice with a non-zero element, take linear combination and do 
+!                       the phi rotation with the largest element.
+                        tmpVec = (oRVecs%vat([0],[ivec])+oRVecs%vat([0],[jvec]))/sqrt(2.0)
+                        call oRVecs%vput((oRVecs%vat([0],[ivec])-oRVecs%vat([0],[jvec]))/sqrt(2.0),[0],[jvec])
+                        call oRVecs%vput(tmpVec,[0],[ivec])
+
                         ind = mqc_vector_Scalar_at(&
                           mqc_vector_argsort(abs(oRVecs%vat([1,ovDim],[ivec])-conjg(oRVecs%vat([ovDim+1,2*ovDim],[ivec])))),ovDim)
                       endIf
@@ -391,8 +396,13 @@
                     if(abs(oRVecs%at(ind,ivec)*oRVecs%at(ind+ovDim,ivec)).lt.thresh) cycle
                   endIf
                   if(jvec.ne.degen_start.and.j.ne.1) then
-                    theta = real(atan((oRVecs%at(ind,ivec)-conjg(oRVecs%at(ind+ovDim,ivec)))/&
-                      (oRVecs%at(ind,jvec)-conjg(oRVecs%at(ind+ovDim,jvec)))))
+                    if(abs(oRVecs%at(ind,jvec)-conjg(oRVecs%at(ind+ovDim,jvec))).gt.thresh) then
+                      theta = real(atan((oRVecs%at(ind,ivec)-conjg(oRVecs%at(ind+ovDim,ivec)))/&
+                        (oRVecs%at(ind,jvec)-conjg(oRVecs%at(ind+ovDim,jvec)))))
+                    else
+                      theta = real(atan((oRVecs%at(ind,jvec)-conjg(oRVecs%at(ind+ovDim,jvec)))/&
+                        (oRVecs%at(ind,ivec)-conjg(oRVecs%at(ind+ovDim,ivec)))))
+                    endIf
                     vec2process = oRVecs%vat([0],[ivec])
                     call oRVecs%vput(cos(theta)*vec2process-sin(theta)*oRVecs%vat([0],[jvec]),[0],[ivec])
                     call oRVecs%vput(sin(theta)*vec2process+cos(theta)*oRVecs%vat([0],[jvec]),[0],[jvec])
@@ -403,13 +413,16 @@
                 endDo
               endDo
 
-              if(mqc_matrix_norm(oRVecs%mat([1,ovDim],[degen_start,degen_end])-&
-                conjg(oRVecs%mat([ovDim+1,2*ovDim],[degen_start,degen_end]))).lt.convThresh) exit
-              if(l.eq.maxIters) then
-                call mqc_print(mqc_matrix_norm(oRVecs%mat([1,ovDim],[degen_start,degen_end])-&
-                  conjg(oRVecs%mat([ovDim+1,2*ovDim],[degen_start,degen_end]))),iOut,&
+              convergence = mqc_matrix_norm(oRVecs%mat([1,ovDim],[degen_start,degen_end])-&
+                conjg(oRVecs%mat([ovDim+1,2*ovDim],[degen_start,degen_end])))
+              if(iPrint.ge.2) call convergence%print(iOut,' Iteration: '//trim(num2char(l,'I4'))//&
+                ' ... convergence: ',FormatStr='F10.6')
+              if(convergence.lt.convThresh) exit
+              if(l.eq.maxIters.or.convergence.ne.convergence) then
+                call mqc_print(convergence,iOut,&
                   'Failed to put eigenvectors in eta norm zero format, convergence',formatStr='F20.12')
                 call mqc_print(oRVecs%mat([0],[degen_start,degen_end]),iOut,'Final eigenvectors')
+                call mqc_print(oRVecs,iOut,'Final eigenvectors')
                 call mqc_error('')
               endIf
          
@@ -417,14 +430,33 @@
 
           else
 !           Only possible option is we have a nondegenerate eigenvector, so we 
-!           should already be in correct vector form. Just cycle.
+!           check if we need to multiply by phi and then cycle.
+            ind = mqc_vector_Scalar_at(&
+              mqc_vector_argsort(abs(oRVecs%vat([1,ovDim],[i])-conjg(oRVecs%vat([ovDim+1,2*ovDim],[i])))),ovDim)
+            phi = real((-1)*cmplx(0.0,1.0)*log(conjg(oRVecs%at(ind+ovDim,i))/oRVecs%at(ind,i))/2.0)
+            call oRVecs%vput(exp(cmplx(0.0,1.0)*phi)*oRVecs%vat([0],[i]),[0],[i])
             cycle
           endif
          
         endDo
         if(iPrint.ge.3) call oRVecs%print(6,'Zero eta-norm eigenvectors')
       endIf
-      if(iter.eq.1) initialORVecs = orVecs
+      if(iter.eq.1) then
+        initialORVecs = orVecs
+        if(wf_string.eq.'C'.and..not.wf_complex) initialORVecs = initialORVecs*cmplx(0.0,1.0)
+      endIf
+      if(size(initialORVecs,1).ne.size(oRVecs,1)) then
+        tmpMat = initialORVecs
+        call initialORVecs%init(size(oRVecs,1),size(initialORVecs,1))
+        call initialORVecs%mput(tmpMat%mat([1,ovDim],[1,size(tmpMat,1)]),&
+          [1,ovDim],[1,size(tmpMat,1)])
+        if(size(oRVecs,1).eq.ovDim*2) then
+          call initialORVecs%mput(conjg(tmpMat),[ovDim+1,-1],[1,size(tmpMat,1)])
+          initialORVecs = initialORVecs/sqrt(2.0)
+        else
+          initialORVecs = initialORVecs*sqrt(2.0)
+        endIf
+      endIf
 !
 !     Print the eigenvalues and eigenvectors
 !
@@ -439,7 +471,6 @@
             write(6,'(1x,A)') NEW_LINE('A')
             exit
           endIf
-!          ind2 = mod(ind-1,ovDim)+1
           ind2 = ind
           vecString = '     '//trim(num2char(mod(ind2-1,nAlpha)+1))
           if((ind2-1)/(2*nAlpha*(nBasis-nAlpha))+1.eq.2) then
@@ -494,7 +525,6 @@
             if(iPrint.ge.3) call mqc_print(vec_overlap,iOut,'Overlap of eigenvectors with previous step vector')
             vpos = maxloc(abs(vec_overlap))
             vval = mqc_vector_scalar_at(vec_overlap,vpos)
-            if(abs(vval).lt.thresh) exit
             if(abs(real(vval)).le.zero.and.abs(aimag(vval)).gt.zero) then
               theta = (-1)*asin(aimag(vval)/(sqrt(real(vval)**2+aimag(vval)**2)))
             elseIf(abs(aimag(vval)).le.zero.and.abs(real(vval)).gt.zero) then
@@ -517,25 +547,36 @@
             vec2process = (-1)*linearFock
             step = initStep
           elseIf(coordinate.eq.'newton'.or.newtonFlag) then
-            if(coordinate.eq.'eigenvector') write(iOut,'(1X,A)') &
+            if(coordinate.eq.'connect') write(iOut,'(1X,A)') &
               'Angle between eigenvector and gradient too small, swapping to Newton step'
 !            vec2process = (-1)*matmul(orbRotHess%inv(),linearFock)
 !           Below does the Newton step without inverting the Hessian but gives the same result 
-            call vec2process%init(ovDim)
-            do i = 1, ovDim
+            call vec2process%init(size(oREigs))
+            do i = 1, size(oREigs)
               vec2process = vec2process - &
                 (dot_product(dagger(oRVecs%vat([0],[i])),linearFock)/oREigs%at(i))*oRVecs%vat([0],[i])
             endDo
-            step = 1.0
+            step = initStep*20
           endIf
 
           if(j.eq.jEnd) then
             optangle = acos(dot_product(dagger((-1)*linearFock),vec2process)/&
               (linearFock%norm()*vec2process%norm()))
             call mqc_print(optangle*180.0/pi,6,'Angle of step vector with gradient vector')
-            if(abs(optangle*180.0/pi-90.0).lt.connectThresh) newtonflag = .true.
+            if(iter.ne.1) then
+              old_sgn = sgn
+              sgn = sign(1,energy-old_energy)
+              if(iter.ne.2.and.old_sgn*sgn.lt.0) newtonflag = .true.
+            endIf
+            if(iter.ne.1.and.abs(optangle*180.0/pi-90.0).lt.connectThresh) newtonflag = .true.
         
             if(iPrint.ge.2) call vec2process%print(iOut,'Step vector')
+            if(size(cumvec).ne.size(vec2process)) then
+              tmpVec = cumvec
+              call cumvec%init(size(vec2process))
+              call cumvec%vput(tmpVec%vat(1,oVDim),1)
+              if(size(vec2process).eq.oVDim*2) call cumvec%vput(conjg(tmpVec),ovDim+1)
+            endIf
             cumvec = cumvec + step*vec2process
             if(iPrint.ge.3) call cumvec%print(iOut,'Cumulative displacement vector')
           endIf
