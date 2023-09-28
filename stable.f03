@@ -22,7 +22,7 @@
       integer(kind=int64)::iOut=6,iPrint=1,iUnit,flag,i,j,k,l,nAlpha,nBeta,nBasis,ovDim,oRHessDim,&
         occ1,occ2,virt1,virt2,ind,ind2,neigs2print=5,elem1,elem2,maxIters=5000,degen_start, &
         degen_end,ivec,jvec,iter,maxSteps=1,vpos,jEnd,sgn,old_sgn
-      real(kind=real64)::vecThresh=0.1,initStep=0.05,step,connectThresh=5.0
+      real(kind=real64)::vecThresh=0.1,initStep=0.05,step,connectThresh=0.5
       real(kind=real64),parameter::thresh=1.0e-10,etaThresh=1.0e-6,zero=1.0e-12,convThresh=1.0e-8, &
         followThresh=1.0e-7
       logical::found,wf_complex,doUHF,doGHF,doComplex,file_exists
@@ -250,13 +250,26 @@
           dagger(mo_coefficients%orbitals('occupied',[nAlpha],[nBeta])))
         if(iPrint.ge.2) call density%print(iOut,'Density matrix')
         Gmat = contraction(AOeris,density)
+        if(iPrint.ge.2) call Gmat%print(iOut,'G matrix')
         if(iter.ne.1) old_energy = energy
-        energy = contraction(core_hamiltonian,density)+0.5*contraction(density%swapODB(),Gmat)+Vnn
+!        call mqc_print(contraction(core_hamiltonian,density),6,'1e energy')
+!        call mqc_print(0.5*contraction(density,Gmat),6,'1/2<PG(P)>')
+!        call mqc_print(0.5*contraction(transpose(density),Gmat),6,'1/2<transpose(P)G(P)>')
+!        call mqc_print(contraction(transpose(aimag(density%getBlock())),aimag(Gmat%getBlock())),6,'<aimag(P)G(P)>')
+!        energy = contraction(core_hamiltonian,density)+0.5*contraction(density%swapODB(),Gmat)+Vnn
+!        energy = contraction(core_hamiltonian,density)+0.5*contraction(density,Gmat%swapODB())+Vnn
+!        energy = contraction(core_hamiltonian,density)+0.5*contraction(density,Gmat)+Vnn
+        energy = contraction(core_hamiltonian,density)+0.5*contraction(transpose(density),Gmat)+Vnn
+!        energy = contraction(core_hamiltonian,density)+0.5*contraction(dagger(density),Gmat)+Vnn
         call energy%print(6,'Hartree-Fock Energy',FormatStr='F20.12')
 !
 !     Compute MO Fock matrix (orbital rotation gradient)
 !
+!      AOfock = core_hamiltonian + Gmat%swapODB()
       AOfock = core_hamiltonian + Gmat
+!        energy = 0.5*contraction(core_hamiltonian+AOFock,transpose(density))+Vnn
+!        call energy%print(6,'Alternative Energy 2',FormatStr='F20.12')
+      if(iPrint.ge.2) call AOfock%print(iOut,'AO Fock matrix')
       fock = matmul(matmul(dagger(mo_coefficients),AOfock),mo_coefficients)
       if(iPrint.ge.2) call fock%print(iOut,'MO Fock matrix')
       call twoERI_trans(iOut,iPrint,mo_coefficients,AOeris(1),eris(1))
@@ -407,6 +420,7 @@
                     call oRVecs%vput(cos(theta)*vec2process-sin(theta)*oRVecs%vat([0],[jvec]),[0],[ivec])
                     call oRVecs%vput(sin(theta)*vec2process+cos(theta)*oRVecs%vat([0],[jvec]),[0],[jvec])
                   endIf
+                  if (abs(oRVecs%at(ind,ivec)).lt.thresh) exit
                   phi = real((-1)*cmplx(0.0,1.0)*log(conjg(oRVecs%at(ind+ovDim,ivec))/oRVecs%at(ind,ivec))/2.0)
                   call oRVecs%vput(exp(cmplx(0.0,1.0)*phi)*oRVecs%vat([0],[ivec]),[0],[ivec])
                   exit
@@ -542,10 +556,10 @@
               ', Overlap: '//trim(num2char(vval,'F10.6'))
 !           update the old vector followed to the previous iteration
             call initialoRVecs%vput(vec2process,[0],[int(vecfollow%at(j))]) 
-            step = initStep
+            step = initStep*max(1.0,sqrt(2.0)*((oRHessDim/ovDim)-1))
           elseIf(coordinate.eq.'gradient') then
             vec2process = (-1)*linearFock
-            step = initStep
+            step = initStep*max(1.0,sqrt(2.0)*((oRHessDim/ovDim)-1))
           elseIf(coordinate.eq.'newton'.or.newtonFlag) then
             if(coordinate.eq.'connect') write(iOut,'(1X,A)') &
               'Angle between eigenvector and gradient too small, swapping to Newton step'
