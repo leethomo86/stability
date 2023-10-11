@@ -21,7 +21,7 @@
       character(len=256)::vecString,otype='chk',file_tmp,coordinate=''
       integer(kind=int64)::iOut=6,iPrint=1,iUnit,flag,i,j,k,l,nAlpha,nBeta,nBasis,ovDim,oRHessDim,&
         occ1,occ2,virt1,virt2,ind,ind2,neigs2print=5,elem1,elem2,maxIters=5000,degen_start, &
-        degen_end,ivec,jvec,iter,maxSteps=1,vpos,jEnd,sgn,old_sgn
+        degen_end,ivec,jvec,iter,maxSteps=1,vpos,jEnd,sgn,old_sgn,writeStep=-1
       real(kind=real64)::vecThresh=0.1,initStep=0.05,step,connectThresh=0.5
       real(kind=real64),parameter::thresh=1.0e-10,etaThresh=1.0e-6,zero=1.0e-12,convThresh=1.0e-8, &
         followThresh=1.0e-7
@@ -189,6 +189,16 @@
           call mqc_get_command_argument(i+1,command)
           read(command,'(F10.5)') connectThresh
           j = i + 2
+        elseIf(command.eq.'--save') then
+!
+!*      --save number                    Save final perturbed orbitals as Gaussian matrix files at
+!*                                       interval iteration steps defined by input. 0 does not save
+!*                                       and -1 saves after termination (default).
+!*
+          call mqc_get_command_argument(i+1,command)
+          read(command,'(I5)') writeStep
+          j=i+2
+
 !*   4. Help
         elseIf(command.eq.'--help') then
 !
@@ -562,7 +572,7 @@
             step = initStep*max(1.0,sqrt(2.0)*((oRHessDim/ovDim)-1))
           elseIf(coordinate.eq.'newton'.or.newtonFlag) then
             if(coordinate.eq.'connect') write(iOut,'(1X,A)') &
-              'Angle between eigenvector and gradient too small, swapping to Newton step'
+              'Criteria to step to Newton step met: Performing Newton step'
 !            vec2process = (-1)*matmul(orbRotHess%inv(),linearFock)
 !           Below does the Newton step without inverting the Hessian but gives the same result 
             call vec2process%init(size(oREigs))
@@ -570,7 +580,7 @@
               vec2process = vec2process - &
                 (dot_product(dagger(oRVecs%vat([0],[i])),linearFock)/oREigs%at(i))*oRVecs%vat([0],[i])
             endDo
-            step = initStep*20
+            step = abs(initStep)
           endIf
 
           if(j.eq.jEnd) then
@@ -580,9 +590,15 @@
             if(iter.ne.1) then
               old_sgn = sgn
               sgn = sign(1,energy-old_energy)
-              if(iter.ne.2.and.old_sgn*sgn.lt.0) newtonflag = .true.
+              if(iter.ne.2.and.old_sgn*sgn.lt.0.and.coordinate.eq.'connect') then
+                write(iOut,'(1X,A)') 'Energy change has changed sign, swapping to Newton step' 
+                newtonflag = .true.
+              endIf
             endIf
-            if(iter.ne.1.and.abs(optangle*180.0/pi-90.0).lt.connectThresh) newtonflag = .true.
+            if(iter.ne.1.and.abs(optangle*180.0/pi-90.0).lt.connectThresh.and.coordinate.eq.'connect') then
+              write(iOut,'(1X,A)') 'Angle between eigenvector and gradient too small, swapping to Newton step'
+              newtonflag = .true.
+            endIf
         
             if(iPrint.ge.2) call vec2process%print(iOut,'Step vector')
             if(size(cumvec).ne.size(vec2process)) then
@@ -610,6 +626,7 @@
         if(iPrint.ge.3) call mqc_print(matmul(matmul(dagger(mo_coefficients),overlap),mo_coefficients),iOut,&
           'Molecular orbital orthogonality check')
 
+
         if(MQC_Matrix_Norm(mo_coefficients%getBlock('alpha')-mo_coefficients%getBlock('beta')).lt.thresh.and.&
           mqc_matrix_norm(mo_coefficients%getBlock('alpha-beta')).lt.thresh.and. &
           mqc_matrix_norm(mo_coefficients%getBlock('beta-alpha')).lt.thresh) then
@@ -634,8 +651,8 @@
           outputFileIn = outputFileIn(1:(len(fileName)-4))
         endIf
         outputFile = outputFileIn
+        file_tmp = trim(outputfile)//'-1'
         i = 1
-        file_tmp = trim(outputfile)
         file_exists = .true.
         do while (file_exists)
           inquire(file=trim(file_tmp)//'.mat',exist=file_exists)
@@ -643,22 +660,31 @@
             i = i+1
             file_tmp = trim(outputfile)//'-'
             call build_string_add_int(i,file_tmp,20)
+          elseIf(writeStep.ne.0.and.i.ne.1) then
+            ! if the file doesn't exist and we should overwrite, then deincrement filename
+            if (mod(iter-1,writeStep).ne.0.or.writeStep.eq.-1) then
+              i = i-1
+              file_tmp = trim(outputfile)//'-'
+              call build_string_add_int(i,file_tmp,20)
+            endIf
           endIf
         endDo
         outputfile = trim(file_tmp)
 
-        call write_output_file(iPrint,trim(outputfile)//".mat",fileinfo,doUHF,doGHF,doComplex,mo_coefficients,&
-          mo_energies,nBasis,sh2AtMp,shlTyp,nPrmSh,prmExp,conCoef,conCoTwo,shCoor)
+        if(writeStep.ne.0) then
+          call write_output_file(iPrint,trim(outputfile)//".mat",fileinfo,doUHF,doGHF,doComplex,mo_coefficients,&
+            mo_energies,nBasis,sh2AtMp,shlTyp,nPrmSh,prmExp,conCoef,conCoTwo,shCoor)
 
-        select case (otype)
-        case ('chk')
-          call EXECUTE_COMMAND_LINE("unfchk -matrix "//trim(outputFile)//".mat "//trim(outputFile)//".chk")
-          call EXECUTE_COMMAND_LINE("rm "//trim(outputFile)//".mat")
-        case ('mat')
-!         nothing to do here
-        case default
-          call mqc_error('Requested output file type not recognized')
-        end select
+          select case (otype)
+          case ('chk')
+            call EXECUTE_COMMAND_LINE("unfchk -matrix "//trim(outputFile)//".mat "//trim(outputFile)//".chk")
+            call EXECUTE_COMMAND_LINE("rm "//trim(outputFile)//".mat")
+          case ('mat')
+!           nothing to do here
+          case default
+            call mqc_error('Requested output file type not recognized')
+          end select
+        endIf
       endIf
 !
 !     We have finished updating the MOs so loop back to redo the stability if eigenfollowing routine requested.
